@@ -19,4 +19,8 @@
     <ProjectReference Include="..\Examples.Common\Examples.Common.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Folder Include="Crypto\" />
+  </ItemGroup>
+
 </Project>

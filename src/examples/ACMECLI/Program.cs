@@ -9,6 +9,7 @@ using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using ACMECLI.Crypto;
 using ACMESharp;
 using ACMESharp.Authorizations;
 using ACMESharp.Crypto;
@@ -125,8 +126,11 @@ namespace ACMECLI
         private DateTime? _testWaitUntil;
 
 
-        static async Task Main(string[] args) =>
-                await CommandLineApplication.ExecuteAsync<Program>(args);
+        static async Task Main(string[] args)
+        {
+            await CommandLineApplication.ExecuteAsync<Program>(args);
+            Console.ReadLine();
+        }
 
         public async Task OnExecute()
         {
@@ -136,6 +140,7 @@ namespace ACMECLI
             Console.WriteLine("################################################################################");
             Console.WriteLine();
 
+            Directory.Delete(_statePath, true);
             if (!Directory.Exists(_statePath))
             {
                 Console.WriteLine($"Creating State Persistence Path [{_statePath}]");
@@ -426,6 +431,7 @@ namespace ACMECLI
                     }
 
                     string certKeys = null;
+                    CertPrivateKey key = null;
                     byte[] certCsr = null;
 
                     if (LoadStateInto(ref certKeys, failThrow: false,
@@ -441,11 +447,16 @@ namespace ACMECLI
                         switch (KeyAlgor)
                         {
                             case Constants.RsaKeyType:
-                                certKeys = CryptoHelper.Rsa.GenerateKeys(KeySize ?? Constants.DefaultAlgorKeySizeMap[KeyAlgor]);
-                                using (var rsa = CryptoHelper.Rsa.GenerateAlgorithm(certKeys))
-                                {
-                                    certCsr = CryptoHelper.Rsa.GenerateCsr(Dns, rsa);
-                                }
+
+                                key = CertHelper.GenerateRsaPrivateKey(
+                                        KeySize ?? Constants.DefaultAlgorKeySizeMap[KeyAlgor]);
+                                certCsr = CertHelper.GenerateRsaCsr(Dns, key);
+
+                                //certKeys = CryptoHelper.Rsa.GenerateKeys(KeySize ?? Constants.DefaultAlgorKeySizeMap[KeyAlgor]);
+                                //using (var rsa = CryptoHelper.Rsa.GenerateAlgorithm(certKeys))
+                                //{
+                                //    certCsr = CryptoHelper.Rsa.GenerateCsr(Dns, rsa);
+                                //}
                                 break;
                             case Constants.EcKeyType:
                                 certKeys = CryptoHelper.Ec.GenerateKeys(KeySize ?? Constants.DefaultAlgorKeySizeMap[KeyAlgor]);
@@ -457,8 +468,14 @@ namespace ACMECLI
                             default:
                                 throw new Exception($"Unknown key algorithm type [{KeyAlgor}]");
                         }
+                        using (var keyPem = new MemoryStream())
+                        {
+                            CertHelper.ExportPrivateKey(key, EncodingFormat.PEM, keyPem);
+                            keyPem.Position = 0L;
+                            SaveRaw<Stream>(keyPem, Constants.AcmeOrderCertKeyFmt + ".pem", orderId);
+                        }
 
-                        SaveStateFrom(certKeys, Constants.AcmeOrderCertKeyFmt, orderId);
+                        //SaveStateFrom(key, Constants.AcmeOrderCertKeyFmt + ".pem", orderId);
                         SaveStateFrom(certCsr, Constants.AcmeOrderCertCsrFmt, orderId);
                     }
 
@@ -533,16 +550,35 @@ namespace ACMECLI
                     }
                 }
 
-                if (ExportPfx != null)
+                CertPrivateKey key = null;
+                if (key == null)
                 {
-                    Console.WriteLine("Exporting Certificate as PKCS12...");
-                    using (var cert = new X509Certificate2(LoadRaw<byte[]>(
-                            true, Constants.AcmeOrderCertFmt, orderId)))
-                    {
-                        await File.WriteAllBytesAsync(ExportPfx,
-                                cert.Export(X509ContentType.Pkcs12));
-                    }
+                    Console.WriteLine("Loading private key");
+                    key = CertHelper.ImportPrivateKey(EncodingFormat.PEM,
+                            LoadRaw<Stream>(true, Constants.AcmeOrderCertKeyFmt+".pem", orderId));
                 }
+
+                using (var crtStream = LoadRaw<Stream>(true, Constants.AcmeOrderCertFmt, orderId))
+                using (var pfxStream = new MemoryStream())
+                {
+                    Console.WriteLine("Reading in Certificate chain (PEM)");
+                    var cert = CertHelper.ImportCertificate(EncodingFormat.PEM, crtStream);
+                    Console.WriteLine("Writing out Certificate archive (PKCS12)");
+                    CertHelper.ExportArchive(key, new[] { cert }, ArchiveFormat.PKCS12, pfxStream);
+                    pfxStream.Position = 0L;
+                    SaveRaw<Stream>(pfxStream, ExportPfx);
+                }
+
+                //if (ExportPfx != null)
+                //{
+                //    Console.WriteLine("Exporting Certificate as PKCS12...");
+                //    using (var cert = new X509Certificate2(LoadRaw<byte[]>(
+                //            true, Constants.AcmeOrderCertFmt, orderId)))
+                //    {
+                //        await File.WriteAllBytesAsync(ExportPfx,
+                //                cert.Export(X509ContentType.Pkcs12));
+                //    }
+                //}
             }
             else
             {
@@ -598,7 +634,7 @@ namespace ACMECLI
                     {
                         Console.WriteLine("        Last Test:  " + err);
                         Console.WriteLine("        Waiting...");
-                        Thread.Sleep(30 * 1000);
+                        Thread.Sleep(5 * 1000);
                         continue;
                     }
 
